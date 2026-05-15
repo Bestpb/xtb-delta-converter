@@ -1,232 +1,127 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="cs">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>XTB → Delta XML FIX4</title>
-<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<style>
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:#111827;color:white;padding:20px;margin:0}
-.box{max-width:900px;margin:auto;background:#1f2937;padding:20px;border-radius:16px}
-button{padding:14px;border:0;border-radius:12px;background:#7c3aed;color:white;font-weight:bold;width:100%;margin-top:12px;font-size:16px}
-input{width:100%;padding:12px;background:#111827;border:1px dashed #64748b;border-radius:12px;color:white}
-pre{background:#000;padding:12px;border-radius:10px;overflow:auto;white-space:pre-wrap}
-.ok{color:#22c55e}.err{color:#ef4444}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XTB to Delta Converter - Pavel</title>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 40px auto; padding: 20px; background-color: #f4f4f9; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2c3e50; font-size: 24px; }
+        .file-input { margin: 20px 0; border: 2px dashed #3498db; padding: 30px; text-align: center; border-radius: 5px; cursor: pointer; }
+        button { background: #3498db; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #2980b9; }
+        #status { margin-top: 20px; font-weight: bold; }
+    </style>
 </head>
 <body>
-<div class="box">
-<h1>XTB → Delta XML FIX4</h1>
-<p>Čte XTB XLSX přímo jako ZIP/XML. Vhodné pro iPad/Safari/GitHub Pages.</p>
-<input type="file" id="f" accept=".xlsx,.xls">
-<button onclick="go()">Převést na Delta CSV</button>
-<pre id="log">Čekám na soubor…</pre>
+
+<div class="container">
+    <h1>XTB -> Delta Converter</h1>
+    <p>Nahrajte XLSX export z XTB (obsahující Cash Operations / Closed Positions).</p>
+    
+    <div class="file-input" onclick="document.getElementById('fileInput').click()">
+        Klepněte pro výběr souboru nebo jej přetáhněte sem
+        <input type="file" id="fileInput" accept=".xlsx" style="display:none">
+    </div>
+    
+    <div id="status"></div>
 </div>
 
 <script>
-const HEAD=["Date","Way","Base amount","Base currency (name)","Base type","Quote amount","Quote currency","Exchange","Sent/Received","Sent to","Fee amount","Fee currency","Broker","Notes"];
+    document.getElementById('fileInput').addEventListener('change', handleFile);
 
-function write(t){document.getElementById("log").textContent=t;}
-function append(t){document.getElementById("log").textContent+="\n"+t;}
+    function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
 
-async function go(){
-  try{
-    write("Zpracovávám XLSX jako ZIP/XML…");
-    const file=document.getElementById("f").files[0];
-    if(!file){alert("Vyber XLSX soubor");return;}
-    const zip=await JSZip.loadAsync(await file.arrayBuffer());
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            
+            const status = document.getElementById('status');
+            status.innerText = "Zpracovávám...";
 
-    const shared=await loadSharedStrings(zip);
-    append("Shared strings: "+shared.length);
+            let deltaRows = [
+                ["Date", "Way", "Base amount", "Base currency (name)", "Base type", "Quote amount", "Quote currency", "Exchange", "Sent/Received from", "Sent to", "Fee amount", "Fee currency (name)", "Broker", "Notes"]
+            ];
 
-    let all=[];
-    const sheetNames=Object.keys(zip.files).filter(n=>n.match(/^xl\/worksheets\/sheet\d+\.xml$/));
-    append("Listy: "+sheetNames.join(", "));
+            // 1. Zpracování Cash Operations (Nákupy a Dividendy)
+            const cashSheetName = workbook.SheetNames.find(n => n.includes('Cash Operation'));
+            if (cashSheetName) {
+                const cashData = XLSX.utils.sheet_to_json(workbook.Sheets[cashSheetName], { range: 4 });
+                
+                cashData.forEach(row => {
+                    const type = row['Type'] || '';
+                    const comment = row['Comment'] || '';
+                    const tickerRaw = row['Ticker'] || '';
+                    const ticker = tickerRaw.split('.')[0]; // AAPL.US -> AAPL
+                    
+                    if (type === 'Stock purchase') {
+                        // Extrakce počtu kusů z komentáře: "OPEN BUY 0.0022 @ 4446.00"
+                        const match = comment.match(/BUY ([\d.]+) @/);
+                        const volume = match ? match[1] : "";
+                        const totalAmount = Math.abs(parseFloat(row['Amount']));
 
-    for(const s of sheetNames){
-      const xml=await zip.file(s).async("string");
-      const rows=parseSheet(xml, shared);
-      append(s+": "+rows.length+" řádků");
-      all=all.concat(parseRows(rows));
+                        deltaRows.push([
+                            formatDate(row['Time']), 
+                            "BUY", 
+                            volume, 
+                            ticker, 
+                            "STOCK", 
+                            totalAmount, 
+                            "USD", 
+                            "XTB", "", "", "0", "USD", "XTB", comment
+                        ]);
+                    } 
+                    else if (type === 'Dividend') {
+                        deltaRows.push([
+                            formatDate(row['Time']), 
+                            "DEPOSIT", 
+                            row['Amount'], 
+                            ticker, 
+                            "STOCK", 
+                            "", "", "XTB", "DIVIDENDS", "MY_WALLET", "0", "USD", "XTB", comment
+                        ]);
+                    }
+                });
+            }
+
+            // TODO: Zde lze přidat logiku pro Closed Positions (Prodeje) obdobným způsobem
+
+            if (deltaRows.length > 1) {
+                downloadCSV(deltaRows);
+                status.innerText = "Hotovo! Soubor se stahuje.";
+            } else {
+                status.innerText = "V souboru nebyla nalezena žádná relevantní data.";
+            }
+        };
+        reader.readAsArrayBuffer(file);
     }
 
-    all=dedupe(all);
-    if(!all.length){
-      write("Nenalezeny žádné řádky k převodu.\nZnamená to, že v exportu nejsou řádky typu Stock purchase / OPEN BUY nebo OPEN SELL.");
-      return;
+    function formatDate(dateStr) {
+        if (!dateStr) return "";
+        // Převod z XTB formátu na ISO pro Deltu
+        return dateStr.replace(" ", "T") + "+00:00";
     }
 
-    const csv=toCsv([HEAD,...all.map(r=>HEAD.map(h=>r[h]||""))]);
-    const base=file.name.replace(/\.[^.]+$/,"");
-    const stamp=new Date().toISOString().replace(/[-:T]/g,"").slice(0,14);
-    download(csv,base+"_DELTA_IMPORT_"+stamp+".csv");
-
-    write("HOTOVO – CSV staženo.\nExportováno řádků: "+all.length+"\nFormát: UTF-8 bez BOM, 14 sloupců, CRLF.\n\nPrvní řádky:\n"+all.slice(0,10).map(r=>JSON.stringify(r)).join("\n"));
-  }catch(e){
-    write("CHYBA: "+e.message);
-    console.error(e);
-  }
-}
-
-async function loadSharedStrings(zip){
-  const f=zip.file("xl/sharedStrings.xml");
-  if(!f)return [];
-  const xml=await f.async("string");
-  const doc=new DOMParser().parseFromString(xml,"application/xml");
-  const sis=[...doc.getElementsByTagNameNS("*","si")];
-  return sis.map(si=>[...si.getElementsByTagNameNS("*","t")].map(t=>t.textContent||"").join(""));
-}
-
-function parseSheet(xml, shared){
-  const doc=new DOMParser().parseFromString(xml,"application/xml");
-  const rowEls=[...doc.getElementsByTagNameNS("*","row")];
-  const rows=[];
-  for(const rowEl of rowEls){
-    const obj={};
-    const cells=[...rowEl.getElementsByTagNameNS("*","c")];
-    for(const c of cells){
-      const ref=c.getAttribute("r")||"";
-      const col=ref.replace(/[0-9]/g,"");
-      const type=c.getAttribute("t")||"";
-      const vEl=c.getElementsByTagNameNS("*","v")[0];
-      let val=vEl ? vEl.textContent : "";
-      if(type==="s") val=shared[Number(val)] || "";
-      obj[col]=val;
+    function downloadCSV(rows) {
+        const csvContent = rows.map(e => e.join(",")).join("\n");
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        
+        link.setAttribute("href", url);
+        link.setAttribute("download", `delta_import_xtb_${timestamp}.csv`);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
     }
-    rows.push(obj);
-  }
-  return rows;
-}
-
-function parseRows(rows){
-  let out=[];
-  for(const r of rows){
-    const type=String(r["A"]||"").trim();
-    const tickerRaw=String(r["B"]||"").trim();
-    const time=r["D"];
-    const amount=r["E"];
-    const comment=String(r["G"]||"").trim();
-
-    // XTB nový export: Cash Operations / Stock purchase
-    if(type==="Stock purchase" || type==="Stock sale"){
-      const m=comment.match(/OPEN\s+(BUY|SELL)\s+([0-9.]+)\s+@\s+([0-9.]+)/i);
-      if(!m || !tickerRaw) continue;
-      const way=m[1].toUpperCase();
-      const qty=Number(m[2]);
-      const ticker=mapTicker(tickerRaw);
-      out.push(deltaRow({
-        date: excelDate(time),
-        way,
-        qty: formatQty(qty,ticker),
-        ticker,
-        baseType: isETF(ticker)?"FUND":"STOCK",
-        quoteAmount: money(Math.abs(Number(amount)||0)),
-        quoteCurrency: inferCurrency(tickerRaw),
-        exchange: inferExchange(tickerRaw)
-      }));
-    }
-
-    // cash operations
-    if(type.toUpperCase().includes("DEPOSIT") || type.toUpperCase().includes("WITHDRAW")){
-      const way=type.toUpperCase().includes("DEPOSIT") ? "DEPOSIT" : "WITHDRAW";
-      const cur=inferCurrencyFromText(comment) || inferCurrency(tickerRaw) || "";
-      out.push({
-        "Date": excelDate(time),
-        "Way": way,
-        "Base amount": "",
-        "Base currency (name)": cur,
-        "Base type": "",
-        "Quote amount": "",
-        "Quote currency": "",
-        "Exchange": "",
-        "Sent/Received": "",
-        "Sent to": "",
-        "Fee amount": "",
-        "Fee currency": "",
-        "Broker": "XTB",
-        "Notes": ""
-      });
-    }
-  }
-  return out.filter(r=>r["Date"] && r["Way"]);
-}
-
-function deltaRow(x){
-  return {
-    "Date": x.date,
-    "Way": x.way,
-    "Base amount": x.qty,
-    "Base currency (name)": x.ticker,
-    "Base type": x.baseType,
-    "Quote amount": x.quoteAmount,
-    "Quote currency": x.quoteCurrency,
-    "Exchange": x.exchange,
-    "Sent/Received": "",
-    "Sent to": "",
-    "Fee amount": "",
-    "Fee currency": "",
-    "Broker": "XTB",
-    "Notes": ""
-  };
-}
-
-function mapTicker(t){
-  t=String(t||"").trim().toUpperCase();
-  const map={
-    "GOOGC.US":"GOOGL","GOOG.US":"GOOGL","GOOGL.US":"GOOGL",
-    "TSLA.US":"TSLA","AAPL.US":"AAPL","MSFT.US":"MSFT",
-    "SMSN.UK":"SMSN",
-    "VUAA.DE":"VUAA","EUNL.DE":"EUNL","IS3N.DE":"IS3N","SXRV.DE":"SXRV","IB1T.DE":"IB1T","SEC0.DE":"SEC0","AIR.DE":"AIR"
-  };
-  if(map[t]) return map[t];
-  if(t.endsWith(".US")||t.endsWith(".DE")||t.endsWith(".UK")) return t.slice(0,-3);
-  return t;
-}
-
-function isETF(t){return ["VUAA","EUNL","IS3N","SXRV","IB1T","SEC0","VWCE","SXR8","CSPX","IWDA","EIMI"].includes(t);}
-function inferCurrency(t){t=String(t||"").toUpperCase(); if(t.endsWith(".DE"))return"EUR"; if(t.endsWith(".US")||t.endsWith(".UK"))return"USD"; return "";}
-function inferExchange(t){t=String(t||"").toUpperCase(); if(t.endsWith(".DE"))return"Xetra"; if(t.endsWith(".US"))return"Nasdaq"; if(t.endsWith(".UK"))return"London"; return "";}
-function inferCurrencyFromText(t){t=String(t||"").toUpperCase(); if(t.includes("USD"))return"USD"; if(t.includes("EUR"))return"EUR"; if(t.includes("CZK"))return"CZK"; return "";}
-function money(n){return Math.abs(Number(n)||0).toFixed(2);}
-function formatQty(n,ticker){n=Math.abs(Number(n)||0); return (ticker==="TSLA" ? n.toFixed(3) : n.toFixed(8)).replace(/\.?0+$/,"");}
-
-function excelDate(v){
-  const n=Number(v);
-  if(!isNaN(n) && n>20000){
-    const ms=(n-25569)*86400*1000;
-    const d=new Date(ms);
-    return d.getUTCFullYear()+"-"+pad(d.getUTCMonth()+1)+"-"+pad(d.getUTCDate());
-  }
-  const d=new Date(v);
-  if(!isNaN(d)) return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate());
-  return "";
-}
-function pad(n){return String(n).padStart(2,"0");}
-
-function dedupe(rows){
-  const seen=new Set(), out=[];
-  for(const r of rows){
-    const k=HEAD.map(h=>r[h]||"").join("|");
-    if(!seen.has(k)){seen.add(k);out.push(r);}
-  }
-  return out;
-}
-
-function esc(v){
-  const s=String(v??"");
-  if(/[",\r\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
-  return s;
-}
-function toCsv(rows){return rows.map(r=>r.map(esc).join(",")).join("\r\n")+"\r\n";}
-function download(text,name){
-  const blob=new Blob([text],{type:"text/csv;charset=utf-8"});
-  const a=document.createElement("a");
-  a.href=URL.createObjectURL(blob);
-  a.download=name;
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
-}
 </script>
+
 </body>
 </html>
