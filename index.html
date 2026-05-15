@@ -172,33 +172,14 @@ function deltaRow(x){
 
 function mapTicker(t){
   t=String(t||"").trim().toUpperCase();
-
   const map={
-    "GOOGC.US":"GOOGL",
-    "GOOG.US":"GOOGL",
-    "GOOGL.US":"GOOGL",
-
-    "TSLA.US":"TSLA",
-    "AAPL.US":"AAPL",
-    "MSFT.US":"MSFT",
-
-    "SMSN.UK":"SMSN.L",
-
-    "VUAA.DE":"VUAA",
-    "EUNL.DE":"EUNL",
-    "IS3N.DE":"IS3N",
-    "SXRV.DE":"SXRV",
-    "IB1T.DE":"IB1T",
-    "SEC0.DE":"SEC0",
-    "AIR.DE":"AIR"
+    "GOOGC.US":"GOOGL","GOOG.US":"GOOGL","GOOGL.US":"GOOGL",
+    "TSLA.US":"TSLA","AAPL.US":"AAPL","MSFT.US":"MSFT",
+    "SMSN.UK":"SMSN",
+    "VUAA.DE":"VUAA","EUNL.DE":"EUNL","IS3N.DE":"IS3N","SXRV.DE":"SXRV","IB1T.DE":"IB1T","SEC0.DE":"SEC0","AIR.DE":"AIR"
   };
-
   if(map[t]) return map[t];
-
-  if(t.endsWith(".US")) return t.slice(0,-3);
-
-  if(t.endsWith(".DE")) return t.slice(0,-3);
-
+  if(t.endsWith(".US")||t.endsWith(".DE")||t.endsWith(".UK")) return t.slice(0,-3);
   return t;
 }
 
